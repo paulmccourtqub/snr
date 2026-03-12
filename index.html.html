@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Signal-to-Noise Ratio (SNR) Audio Lab</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; flex-direction: column; align-items: center; background: #f0f2f5; padding: 20px; }
+        .card { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); width: 850px; }
+        
+        canvas { background: #111; border: 2px solid #444; border-radius: 6px; display: block; margin: 10px 0 20px 0; width: 800px; height: 140px; }
+        
+        .controls { display: grid; grid-template-columns: 1fr; gap: 20px; padding: 20px; background: #f8f9fa; border-radius: 8px; margin-bottom: 20px; border: 1px solid #e9ecef; }
+        .slider-group { display: flex; flex-direction: column; gap: 8px; }
+        input[type="range"] { cursor: pointer; width: 100%; }
+        
+        .stats-board { display: flex; justify-content: space-around; background: #e3f2fd; padding: 15px; border-radius: 8px; border: 1px solid #bbdefb; }
+        .stat-box { text-align: center; }
+        .stat-title { font-size: 0.85em; color: #555; text-transform: uppercase; font-weight: bold; }
+        .stat-value { font-size: 1.4em; font-weight: bold; color: #0d47a1; font-family: monospace; }
+        
+        .audio-btns { display: flex; gap: 10px; align-items: center; justify-content: center; margin-top: 15px; }
+        .btn { padding: 10px 20px; cursor: pointer; border-radius: 5px; border: none; background: #007bff; color: white; font-weight: bold; transition: background 0.2s; }
+        .btn:hover { background: #0056b3; }
+        .btn.active { background: #28a745; box-shadow: inset 0 3px 5px rgba(0,0,0,0.2); }
+        .btn.stop { background: #dc3545; }
+        .btn.stop:hover { background: #c82333; }
+        
+        .chart-label { font-size: 0.9em; font-weight: bold; color: #333; margin-top: 10px; }
+        h2 { margin-top: 0; color: #222; text-align: center; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h2>Signal-to-Noise Ratio (SNR) Simulator</h2>
+    
+    <div class="stats-board">
+        <div class="stat-box">
+            <div class="stat-title">Signal Power (P<sub>s</sub>)</div>
+            <div class="stat-value" id="valPs">-9.0 dB</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-title">Noise Power (P<sub>n</sub>)</div>
+            <div class="stat-value" id="valPn">-&infin; dB</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-title">SNR</div>
+            <div class="stat-value" id="valSNR">&infin; dB</div>
+        </div>
+    </div>
+
+    <div class="controls">
+        <div class="slider-group">
+            <label for="noiseSlider"><strong>Adjust Random Noise Amplitude (A<sub>n</sub>)</strong></label>
+            <input type="range" id="noiseSlider" min="0" max="1" step="0.01" value="0.25">
+        </div>
+        
+        <div class="audio-btns">
+            <button id="sigBtn" class="btn" onclick="toggleAudio('signal')">Play Signal Only</button>
+            <button id="noiseBtn" class="btn" onclick="toggleAudio('noise')">Play Noise Only</button>
+            <button id="bothBtn" class="btn" onclick="toggleAudio('both')">Play Signal + Noise</button>
+            <button class="btn stop" onclick="stopAudio()">Stop</button>
+        </div>
+    </div>
+
+    <div class="chart-label">1. Pure Signal (Tone)</div>
+    <canvas id="sigCanvas" width="800" height="140"></canvas>
+    
+    <div class="chart-label">2. Random Uniform Noise</div>
+    <canvas id="noiseCanvas" width="800" height="140"></canvas>
+    
+    <div class="chart-label">3. Signal + Noise</div>
+    <canvas id="comboCanvas" width="800" height="140"></canvas>
+</div>
+
+<script>
+    const noiseSlider = document.getElementById('noiseSlider');
+    const valPs = document.getElementById('valPs');
+    const valPn = document.getElementById('valPn');
+    const valSNR = document.getElementById('valSNR');
+    
+    const ctxSig = document.getElementById('sigCanvas').getContext('2d');
+    const ctxNoise = document.getElementById('noiseCanvas').getContext('2d');
+    const ctxCombo = document.getElementById('comboCanvas').getContext('2d');
+
+    let time = 0;
+    const As = 0.5;      
+    const f_vis = 0.02;  
+
+    let audioCtx = null, oscNode = null, noiseNode = null, sigGain = null, noiseGain = null, masterGain = null, currentMode = null;
+
+    // --- MATH & UI CALCULATIONS (Only runs when slider moves) ---
+    function updateStats() {
+        const An = parseFloat(noiseSlider.value);
+        
+        const Ps = (As * As) / 2;
+        const Ps_dB = 10 * Math.log10(Ps);
+        
+        const Pn = (An * An) / 3;
+        let Pn_dB = -Infinity;
+        let snr_dB = Infinity;
+
+        if (Pn > 0) {
+            Pn_dB = 10 * Math.log10(Pn);
+            snr_dB = Ps_dB - Pn_dB;
+        }
+
+        valPs.innerHTML = Ps_dB.toFixed(1) + " dBW";
+        valPn.innerHTML = (Pn > 0 ? Pn_dB.toFixed(1) : "-&infin;") + " dBW";
+        valSNR.innerHTML = (Pn > 0 ? snr_dB.toFixed(1) : "&infin;") + " dB";
+        
+        if (snr_dB < 0) valSNR.style.color = "#dc3545"; 
+        else if (snr_dB < 10) valSNR.style.color = "#ff9800"; 
+        else valSNR.style.color = "#28a745"; 
+    }
+
+    // Initialize UI on load
+    updateStats();
+
+    // --- AUDIO ENGINE ---
+    function initAudio() {
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            masterGain = audioCtx.createGain();
+            masterGain.gain.value = 0.5; 
+            masterGain.connect(audioCtx.destination);
+            
+            sigGain = audioCtx.createGain();
+            noiseGain = audioCtx.createGain();
+            sigGain.connect(masterGain);
+            noiseGain.connect(masterGain);
+        }
+    }
+
+    function createNoiseBuffer() {
+        const bufferSize = audioCtx.sampleRate * 2; 
+        const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+        const output = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+            output[i] = Math.random() * 2 - 1; 
+        }
+        return buffer;
+    }
+
+    function updateAudioVolumes() {
+        if (!audioCtx) return;
+        const An = parseFloat(noiseSlider.value);
+        sigGain.gain.setTargetAtTime((currentMode === 'signal' || currentMode === 'both') ? As : 0, audioCtx.currentTime, 0.02);
+        noiseGain.gain.setTargetAtTime((currentMode === 'noise' || currentMode === 'both') ? An : 0, audioCtx.currentTime, 0.02);
+    }
+
+    function toggleAudio(mode) {
+        initAudio();
+        if (currentMode === mode) { stopAudio(); return; }
+        stopAudio();
+        currentMode = mode;
+        
+        let btnId = mode === 'signal' ? 'sigBtn' : (mode === 'noise' ? 'noiseBtn' : 'bothBtn');
+        document.getElementById(btnId).classList.add('active');
+
+        oscNode = audioCtx.createOscillator();
+        oscNode.frequency.value = 440; 
+        oscNode.connect(sigGain);
+        oscNode.start();
+
+        noiseNode = audioCtx.createBufferSource();
+        noiseNode.buffer = createNoiseBuffer();
+        noiseNode.loop = true;
+        noiseNode.connect(noiseGain);
+        noiseNode.start();
+
+        updateAudioVolumes();
+    }
+
+    function stopAudio() {
+        if (oscNode) { oscNode.stop(); oscNode.disconnect(); oscNode = null; }
+        if (noiseNode) { noiseNode.stop(); noiseNode.disconnect(); noiseNode = null; }
+        currentMode = null;
+        document.getElementById('sigBtn').classList.remove('active');
+        document.getElementById('noiseBtn').classList.remove('active');
+        document.getElementById('bothBtn').classList.remove('active');
+    }
+
+    // Listen to slider changes
+    noiseSlider.oninput = () => {
+        updateStats();
+        updateAudioVolumes();
+    };
+
+    // --- VISUALIZATION ENGINE ---
+    function drawGrid(ctx) {
+        ctx.strokeStyle = "#333";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for(let x=0; x<=800; x+=50) { ctx.moveTo(x, 0); ctx.lineTo(x, 140); }
+        for(let y=0; y<=140; y+=35) { ctx.moveTo(0, y); ctx.lineTo(800, y); }
+        ctx.stroke();
+        ctx.strokeStyle = "#666"; 
+        ctx.beginPath(); ctx.moveTo(0, 70); ctx.lineTo(800, 70); ctx.stroke();
+    }
+
+    function draw() {
+        // Read slider value directly without updating the DOM
+        const An = parseFloat(noiseSlider.value);
+
+        [ctxSig, ctxNoise, ctxCombo].forEach(ctx => {
+            ctx.clearRect(0, 0, 800, 140);
+            drawGrid(ctx);
+        });
+
+        ctxSig.beginPath(); ctxNoise.beginPath(); ctxCombo.beginPath();
+        ctxSig.strokeStyle = '#00ff00'; ctxSig.lineWidth = 2;   
+        ctxNoise.strokeStyle = '#ff3333'; ctxNoise.lineWidth = 1; 
+        ctxCombo.strokeStyle = '#00ccff'; ctxCombo.lineWidth = 2; 
+
+        const scale = 50; 
+
+        for (let x = 0; x < 800; x++) {
+            const t_idx = x + time;
+            
+            const ySig = As * Math.sin(2 * Math.PI * f_vis * t_idx);
+            const yNoise = An * (Math.random() * 2 - 1); 
+            const yCombo = ySig + yNoise;
+
+            if (x === 0) {
+                ctxSig.moveTo(x, 70 - (ySig * scale));
+                ctxNoise.moveTo(x, 70 - (yNoise * scale));
+                ctxCombo.moveTo(x, 70 - (yCombo * scale));
+            } else {
+                ctxSig.lineTo(x, 70 - (ySig * scale));
+                ctxNoise.lineTo(x, 70 - (yNoise * scale));
+                ctxCombo.lineTo(x, 70 - (yCombo * scale));
+            }
+        }
+        
+        ctxSig.stroke(); ctxNoise.stroke(); ctxCombo.stroke();
+
+        time += 1.5; 
+        requestAnimationFrame(draw);
+    }
+    
+    // Start visual loop
+    draw();
+</script>
+</body>
+</html>
